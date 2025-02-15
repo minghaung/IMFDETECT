@@ -1,0 +1,196 @@
+#SR model
+library(MASS)
+library(boot)
+library(ggplot2)
+library(caret)  
+library(Metrics) 
+data <- read.csv("original data.csv")
+set.seed(123)
+train_indices <- sample(1:nrow(data), size = floor(0.7 * nrow(data)))
+train_data <- data[train_indices, ]
+test_data <- data[-train_indices, ]
+train_data_scaled <- train_data
+test_data_scaled <- test_data
+train_data_scaled[, -which(names(train_data) == "Fat_content")] <- scale(train_data[, -which(names(train_data) == "Fat_content")])
+test_data_scaled[, -which(names(test_data) == "Fat_content")] <- scale(test_data[, -which(names(test_data) == "Fat_content")], 
+                                                                       center = attr(scale(train_data[, -which(names(train_data) == "Fat_content")]), "scaled:center"), 
+                                                                       scale = attr(scale(train_data[, -which(names(train_data) == "Fat_content")]), "scaled:scale"))
+full_formula <- Fat_content ~ .
+stepwise_model <- stepAIC(lm(full_formula, data = train_data_scaled), direction = "both", 
+                          trace = FALSE, 
+                          scope = list(upper = full_formula, lower = ~1))
+coefficients_list <- list()
+for (i in 1:100) {
+        set.seed(i)
+        boot_indices <- sample(1:nrow(train_data_scaled), size = nrow(train_data_scaled), replace = TRUE)
+        boot_data <- train_data_scaled[boot_indices, ]
+        step_model_boot <- stepAIC(lm(full_formula, data = boot_data), direction = "both", 
+                                   trace = FALSE, 
+                                   scope = list(upper = full_formula, lower = ~1))
+        coefficients_list[[i]] <- names(coefficients(step_model_boot))
+}
+variable_inclusion <- table(unlist(coefficients_list))
+variable_inclusion_sorted <- sort(variable_inclusion, decreasing = TRUE)
+variable_inclusion_df <- data.frame(
+        Variable = names(variable_inclusion_sorted),
+        Inclusion = as.numeric(variable_inclusion_sorted) / 100 * 100
+)
+write.csv(variable_inclusion_df, "variable_inclusion.csv", row.names = FALSE)
+model_formula <- Fat_content ~ G_mean + IIMF + I_mean + H_mean + R.B + R_mean
+final_model <- lm(model_formula, data = train_data_scaled)
+coefficients <- coef(final_model)
+formula_with_coefficients <- paste(
+        round(coefficients[1], 4), 
+        paste(paste(ifelse(coefficients[-1] >= 0, "+", "-"), abs(round(coefficients[-1], 4)), names(coefficients[-1])), collapse = " ")
+)
+print(paste("Final Model Formula: Fat_content =", formula_with_coefficients))
+predictions <- predict(final_model, newdata = test_data_scaled)
+r2 <- summary(final_model)$r.squared
+mae_value <- mae(test_data_scaled$Fat_content, predictions)
+print(paste("R²: ", r2))
+print(paste("MAE: ", mae_value))
+train_control <- trainControl(method = "cv", number = 5)
+cv_model <- train(model_formula, data = train_data_scaled, method = "lm", trControl = train_control)
+cv_r2 <- mean(cv_model$results$Rsquared)
+print(paste("5-Fold Cross-Validation R²: ", cv_r2))
+results <- data.frame(Actual = test_data_scaled$Fat_content, Predicted = predictions)
+print(paste("R²: ", r2))
+print(paste("MAE: ", mae_value))
+print(paste("5-Fold Cross-Validation R²: ", cv_r2))
+
+
+#EN model
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.linear_model import ElasticNetCV
+from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+data_path = 'Filtered_Data.csv'
+data = pd.read_csv(data_path)
+X = data.drop('Fat_content', axis=1)
+y = data['Fat_content']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+elastic_net_cv = ElasticNetCV(cv=5, random_state=42,
+                              l1_ratio=[.1, .5, .7, .9, .95, 1],
+                              alphas=np.logspace(-4, 2, 50),
+                              max_iter=10000)
+elastic_net_cv.fit(X_train_scaled, y_train)
+y_pred = elastic_net_cv.predict(X_test_scaled)
+mae = mean_absolute_error(y_test, y_pred)
+r2 = r2_score(y_test, y_pred)
+cross_val_r2 = cross_val_score(elastic_net_cv, X_train_scaled, y_train, cv=5, scoring='r2')
+print(f"MAE: {mae}")
+print(f"R² on test data: {r2}")
+print(f"Optimal alpha: {elastic_net_cv.alpha_}")
+print(f"Optimal l1_ratio: {elastic_net_cv.l1_ratio_}")
+print(f"Cross-Validation Mean R²: {np.mean(cross_val_r2)}")
+print("Final Model Equation:")
+print("Fat_content = ", end="")
+coefficients = elastic_net_cv.coef_
+intercept = elastic_net_cv.intercept_
+for i, coef in enumerate(coefficients):
+    if coef != 0:
+        if i != 0:
+            print(" + " if coef >= 0 else " - ", end="")
+        print(f"{abs(coef)}*{X.columns[i]}", end="")
+print(f" + {intercept}")
+
+###RF model
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.feature_selection import SelectFromModel
+from sklearn.metrics import r2_score, mean_absolute_error
+data = pd.read_csv('original data')
+X = data.drop(columns=['Fat_content'])
+y = data['Fat_content']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+rf = RandomForestRegressor(random_state=42)
+parameters = {
+    'n_estimators': [50, 100, 200], 
+    'max_depth': [10, 20, 30],  
+    'min_samples_split': [2, 5], 
+    'min_samples_leaf': [1, 2, 5, 10], 
+}
+clf = GridSearchCV(rf, parameters, scoring='r2', cv=5)
+clf.fit(X_train, y_train)
+best_model_rf = clf.best_estimator_
+selector = SelectFromModel(best_model_rf, threshold='median')
+X_train_selected = selector.fit_transform(X_train, y_train)
+X_test_selected = selector.transform(X_test)
+rf_tuned = RandomForestRegressor(random_state=42, n_estimators=300, max_depth=20)
+rf_tuned.fit(X_train_selected, y_train)
+y_pred_selected = rf_tuned.predict(X_test_selected)
+r2_selected = r2_score(y_test, y_pred_selected)
+mae_selected = mean_absolute_error(y_test, y_pred_selected)
+scores_selected = cross_val_score(rf_tuned, X_train_selected, y_train, cv=5, scoring='r2')
+print('Best parameters:', clf.best_params_)
+print('Test R^2 score with selected features:', r2_selected)
+print('Test MAE with selected features:', mae_selected)
+print('Improved Cross-validation R^2 scores:', scores_selected)
+print('Improved Average R^2 score:', np.mean(scores_selected))
+print('Improved Standard deviation of R^2 scores:', np.std(scores_selected))
+
+##DNN model
+import numpy as np
+import pandas as pd
+import random
+import tensorflow as tf
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_absolute_error
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+import keras_tuner as kt
+np.random.seed(42)
+tf.random.set_seed(42)
+random.seed(42)
+data = pd.read_csv('original data.csv')
+X = data.drop(columns=['Fat_content'])
+y = data['Fat_content']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+def create_model(hp):
+    model = Sequential([
+        Dense(units=hp.Choice('units1', values=[64, 128, 256]), activation='relu',
+              input_shape=(X_train_scaled.shape[1],)),
+        Dropout(hp.Choice('dropout1', values=[0.2, 0.3, 0.4])),
+        Dense(units=hp.Choice('units2', values=[32, 64, 128]), activation='relu'),
+        Dropout(hp.Choice('dropout2', values=[0.2, 0.3, 0.4])),
+        Dense(units=hp.Choice('units3', values=[16, 32, 64]), activation='relu'),
+        Dropout(hp.Choice('dropout3', values=[0.2, 0.3, 0.4])),
+        Dense(1)  
+    ])
+    model.compile(optimizer=Adam(learning_rate=hp.Choice('learning_rate', values=[1e-5, 1e-4, 1e-3])),
+                  loss='mse', metrics=['mae'])
+    return model
+tuner = kt.Hyperband(create_model,
+                     objective='val_loss',
+                     max_epochs=50,
+                     hyperband_iterations=2,
+                     directory='my_dir',
+                     project_name='fat_content_tuning')
+tuner.search(X_train_scaled, y_train, epochs=50, batch_size=32, validation_data=(X_test_scaled, y_test))
+best_model = tuner.get_best_models(num_models=1)[0]
+history = best_model.fit(X_train_scaled, y_train, epochs=100, batch_size=32, verbose=0,
+                         validation_data=(X_test_scaled, y_test))
+test_loss, test_mae = best_model.evaluate(X_test_scaled, y_test, verbose=1)
+print(f"Test Loss: {test_loss}, Test MAE: {test_mae}")
+y_pred = best_model.predict(X_test_scaled).flatten()
+r2 = r2_score(y_test, y_pred)
+print(f"R2 Score: {r2}")
+
+
